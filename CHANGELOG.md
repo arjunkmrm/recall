@@ -15,7 +15,7 @@
 ### Backward compatibility
 - DB auto-migrated from `~/.claude/recall.db` to `~/.recall.db` on first run
 - `source` column defaults to `"claude"` for existing rows
-- `file_path` column defaults to `""` for existing rows (run `--reindex` to backfill)
+- If results are missing `File:` paths, run `--reindex` to backfill
 
 ## 0.1.0
 

@@ -69,11 +69,13 @@ cd /path/to/project
 codex resume SESSION_ID
 ```
 
-To read the raw transcript instead (auto-detects Claude Code or Codex format):
+Each result includes a `File:` path. Use it to read the raw transcript (auto-detects format):
 
 ```bash
-python3 ~/.claude/skills/recall/scripts/read_session.py <path-to-session.jsonl>
+python3 ~/.claude/skills/recall/scripts/read_session.py <File-path-from-result>
 ```
+
+If results are missing `File:` paths, run `--reindex` to backfill.
 
 ## Notes
 
