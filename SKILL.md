@@ -69,6 +69,12 @@ cd /path/to/project
 codex resume SESSION_ID
 ```
 
+To read the raw transcript instead (auto-detects Claude Code or Codex format):
+
+```bash
+python3 ~/.claude/skills/recall/scripts/read_session.py <path-to-session.jsonl>
+```
+
 ## Notes
 
 - Index is stored at `~/.recall.db` (SQLite FTS5, auto-migrated from `~/.claude/recall.db`)
