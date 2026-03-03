@@ -11,15 +11,19 @@ npx skills add arjunkmrm/recall
 Then use `/recall` in Claude Code (or Codex) or ask "find a past session where we talked about foo" (you might need to restart Claude Code).
 
 ## How it works
+### Index
 
 ```
   ~/.claude/projects/**/*.jsonl ──┐
                                   ├─▶ Index ──▶ ~/.recall.db (SQLite FTS5)
-  ~/.codex/sessions/**/*.jsonl ──┘       │
-                                         │  incremental (mtime-based)
-                                         │
+  ~/.codex/sessions/**/*.jsonl ───┘   [incremental - mtime-based]  
+
+
+```
+### Query
+```                                        
   Query ──▶ FTS5 Match ──▶ BM25 rank ──▶ Recency boost ──▶ Results
-                │                          half-life: 30 days
+                │                        [half-life: 30 days]
                 │  Porter stemming
                 │  phrase/boolean/prefix
                 ▼
