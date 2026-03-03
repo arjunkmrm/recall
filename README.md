@@ -18,3 +18,7 @@ Then use `/recall` in Claude Code (or Codex) or ask "find a past session where w
 - Returns results ranked by BM25 with highlighted excerpts, tagged `[claude]` or `[codex]`
 - No dependencies — Python 3.9+ stdlib only (sqlite3, json, argparse)
 
+## Contributing
+
+Found a bug or have an idea? [Open an issue](https://github.com/arjunkmrm/recall/issues) or submit a pull request — contributions are welcome!
+
