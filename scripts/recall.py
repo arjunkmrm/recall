@@ -511,7 +511,12 @@ def main():
     args = parser.parse_args()
 
     migrate_db_location()
+    new_db = not DB_PATH.exists()
+    old_umask = os.umask(0o077)
     conn = sqlite3.connect(str(DB_PATH))
+    os.umask(old_umask)
+    if new_db:
+        os.chmod(str(DB_PATH), 0o600)
     conn.execute("PRAGMA journal_mode=WAL")
     conn.execute("PRAGMA synchronous=NORMAL")
     create_schema(conn)

@@ -16,12 +16,12 @@ Then use `/recall` in Claude Code (or Codex) or ask "find a past session where w
 ```
   ~/.claude/projects/**/*.jsonl ──┐
                                   ├─▶ Index ──▶ ~/.recall.db (SQLite FTS5)
-  ~/.codex/sessions/**/*.jsonl ───┘   [incremental - mtime-based]  
+  ~/.codex/sessions/**/*.jsonl ───┘   [incremental - mtime-based]
 
 
 ```
 ### Query
-```                                        
+```
   Query ──▶ FTS5 Match ──▶ BM25 rank ──▶ Recency boost ──▶ Results
                 │                        [half-life: 30 days]
                 │  Porter stemming
