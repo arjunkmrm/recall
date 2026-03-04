@@ -2,28 +2,8 @@
 """Pretty-print a Claude Code or Codex session transcript."""
 
 import json
-import sys
 
-TEXT_BLOCK_TYPES = {"text", "input_text", "output_text"}
-
-SKIP_MARKERS = (
-    "<user_instructions>", "<environment_context>",
-    "<permissions instructions>", "# AGENTS.md instructions",
-)
-
-
-def extract_text(content):
-    """Extract plain text from message content (string or array format)."""
-    if isinstance(content, str):
-        return content
-    if isinstance(content, list):
-        parts = [
-            block.get("text", "")
-            for block in content
-            if isinstance(block, dict) and block.get("type", "") in TEXT_BLOCK_TYPES
-        ]
-        return "\n".join(filter(None, parts))
-    return ""
+from recall_common import SKIP_MARKERS, extract_text
 
 
 def iter_messages(path):

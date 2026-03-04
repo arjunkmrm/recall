@@ -17,38 +17,45 @@ Search all past Claude Code and Codex sessions using full-text search with BM25 
 ## Usage
 
 ```bash
-python3 ~/.claude/skills/recall/scripts/recall.py [QUERY] [--list] [--project PATH] [--days N] [--source claude|codex] [--limit N] [--reindex]
+python3 <RECALL_SKILL_DIR>/scripts/recall.py [QUERY] [--list] [--project PATH] [--days N] [--source claude|codex] [--limit N] [--reindex]
 ```
+
+`<RECALL_SKILL_DIR>` varies by installation. Common examples:
+- `~/.claude/skills/recall`
+- `~/.agents/skills/recall`
 
 ## Examples
 
 ```bash
 # Simple keyword search
-python3 ~/.claude/skills/recall/scripts/recall.py "bufferStore"
+python3 <RECALL_SKILL_DIR>/scripts/recall.py "bufferStore"
 
 # Phrase search (exact match)
-python3 ~/.claude/skills/recall/scripts/recall.py '"ACP protocol"'
+python3 <RECALL_SKILL_DIR>/scripts/recall.py '"ACP protocol"'
 
 # Boolean query
-python3 ~/.claude/skills/recall/scripts/recall.py "rust AND async"
+python3 <RECALL_SKILL_DIR>/scripts/recall.py "rust AND async"
 
 # Prefix search
-python3 ~/.claude/skills/recall/scripts/recall.py "buffer*"
+python3 <RECALL_SKILL_DIR>/scripts/recall.py "buffer*"
 
 # Filter by project and recency
-python3 ~/.claude/skills/recall/scripts/recall.py "state machine" --project ~/my-project --days 7
+python3 <RECALL_SKILL_DIR>/scripts/recall.py "state machine" --project ~/my-project --days 7
 
 # Search only Claude Code sessions
-python3 ~/.claude/skills/recall/scripts/recall.py "buffer" --source claude
+python3 <RECALL_SKILL_DIR>/scripts/recall.py "buffer" --source claude
 
 # Search only Codex sessions
-python3 ~/.claude/skills/recall/scripts/recall.py "buffer" --source codex
+python3 <RECALL_SKILL_DIR>/scripts/recall.py "buffer" --source codex
 
 # Force reindex
-python3 ~/.claude/skills/recall/scripts/recall.py --reindex "test"
+python3 <RECALL_SKILL_DIR>/scripts/recall.py --reindex "test"
 
 # List recent sessions
-python3 ~/.claude/skills/recall/scripts/recall.py --list --limit 20
+python3 <RECALL_SKILL_DIR>/scripts/recall.py --list --limit 20
+
+# List mode with optional text filter
+python3 <RECALL_SKILL_DIR>/scripts/recall.py --list "state machine" --limit 20
 ```
 
 ## Query Syntax (FTS5)
@@ -76,7 +83,7 @@ codex resume SESSION_ID
 Each result includes a `File:` path. Use it to read the raw transcript (auto-detects format):
 
 ```bash
-python3 ~/.claude/skills/recall/scripts/read_session.py <File-path-from-result>
+python3 <RECALL_SKILL_DIR>/scripts/read_session.py <File-path-from-result>
 ```
 
 If results are missing `File:` paths, run `--reindex` to backfill.

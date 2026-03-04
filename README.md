@@ -19,6 +19,9 @@ python3 scripts/recall.py "state machine"
 # List recent sessions (no query required)
 python3 scripts/recall.py --list --limit 20
 
+# List mode with optional text filter
+python3 scripts/recall.py --list "auth api" --source codex --limit 20
+
 # Search only Codex sessions from the last 7 days
 python3 scripts/recall.py "mock api" --source codex --days 7
 ```
@@ -46,7 +49,7 @@ python3 scripts/recall.py "mock api" --source codex --days 7
 - Skips tool_use, tool_result, thinking, and image blocks
 - Results ranked by BM25 with a slight recency bias (recent sessions get up to a 20% boost, decaying with a 30-day half-life)
 - Adds a CJK substring fallback for simple Chinese/Japanese/Korean queries when FTS recall is sparse
-- Supports `--list` to quickly browse recent sessions by recency
+- Supports `--list [QUERY]` to browse recent sessions, with optional text filtering
 - Results tagged `[claude]` or `[codex]` with highlighted excerpts
 - No dependencies — Python 3.9+ stdlib only (sqlite3, json, argparse)
 

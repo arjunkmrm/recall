@@ -3,9 +3,15 @@
 ## Unreleased
 
 - Add `--list` mode to list sessions by recency without a full-text query
+- Allow `--list` to take an optional query filter
 - Add orphan cleanup during indexing (removes DB rows whose source JSONL no longer exists)
 - Add CJK substring fallback for simple Chinese/Japanese/Korean queries to improve recall
+- Fix `--project` matching to include exact path or child paths only (avoid sibling false positives)
+- Escape `%`/`_` in CJK fallback LIKE terms
+- Use session timestamp (instead of message rowid) to order CJK fallback candidates
+- Backfill missing session timestamps from file mtime during indexing
 - Avoid unnecessary FTS automerge writes when no files changed
+- Share message text extraction/skip markers across scripts
 
 ## 0.2.2
 

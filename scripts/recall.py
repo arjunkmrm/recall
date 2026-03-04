@@ -13,6 +13,8 @@ from datetime import datetime
 from glob import glob
 from pathlib import Path
 
+from recall_common import SKIP_MARKERS, extract_text
+
 CLAUDE_DIR = Path.home() / ".claude"
 CODEX_DIR = Path.home() / ".codex"
 DB_PATH = Path.home() / ".recall.db"
@@ -67,29 +69,18 @@ def migrate_db_location():
                 old_extra.rename(Path(str(DB_PATH) + suffix))
 
 
-TEXT_BLOCK_TYPES = {"text", "input_text", "output_text"}
-CODEX_SKIP_MARKERS = ("<user_instructions>", "<environment_context>", "<permissions instructions>", "# AGENTS.md instructions")
 CJK_RE = re.compile(r"[\u3400-\u4dbf\u4e00-\u9fff]")
 CJK_SEGMENT_RE = re.compile(r"[\u3400-\u4dbf\u4e00-\u9fff]+")
 FTS_SPECIAL_QUERY_RE = re.compile(r'["*():]|(^|\s)(AND|OR|NOT)(\s|$)', re.IGNORECASE)
+LIKE_ESCAPE = "\\"
 
-
-def extract_text(content):
-    """Extract plain text from message content (string or array format).
-
-    Accepts "text" (Claude), "input_text" and "output_text" (Codex) block types.
-    Skips tool calls, tool results, thinking blocks, and images.
-    """
-    if isinstance(content, str):
-        return content
-    if isinstance(content, list):
-        parts = [
-            block.get("text", "")
-            for block in content
-            if isinstance(block, dict) and block.get("type", "") in TEXT_BLOCK_TYPES
-        ]
-        return "\n".join(filter(None, parts))
-    return ""
+def escape_like(value):
+    """Escape LIKE wildcards in user-provided terms."""
+    return (
+        value.replace(LIKE_ESCAPE, LIKE_ESCAPE * 2)
+        .replace("%", LIKE_ESCAPE + "%")
+        .replace("_", LIKE_ESCAPE + "_")
+    )
 
 
 def parse_iso_timestamp(ts_str):
@@ -145,6 +136,17 @@ def make_excerpt(text, needle=None, max_len=200):
                 excerpt = excerpt + "..."
             return excerpt
     return clean[:max_len] + ("..." if len(clean) > max_len else "")
+
+
+def project_match_clause(project, alias):
+    """Build SQL clause+params to match an exact project or its child paths."""
+    normalized = (project or "").rstrip("/")
+    if not normalized:
+        normalized = "/"
+
+    like_prefix = escape_like(normalized)
+    clause = f"({alias}.project = ? OR {alias}.project LIKE ? ESCAPE '{LIKE_ESCAPE}')"
+    return clause, [normalized, like_prefix + "/%"]
 
 
 # — Claude Code session parser —————————————————————————————————————————————
@@ -225,7 +227,7 @@ def parse_claude_session(path):
         "file_path": path,
         "project": project or "",
         "slug": slug,
-        "timestamp": earliest_ts or 0,
+        "timestamp": earliest_ts,
     }
     return metadata, messages
 
@@ -330,7 +332,7 @@ def parse_codex_session(path):
                 # Skip system/instruction blocks injected as user messages
                 if not text:
                     continue
-                if any(marker in text for marker in CODEX_SKIP_MARKERS):
+                if any(marker in text for marker in SKIP_MARKERS):
                     continue
 
                 messages.append((role, text))
@@ -349,7 +351,7 @@ def parse_codex_session(path):
         "file_path": path,
         "project": project or "",
         "slug": slug,
-        "timestamp": earliest_ts or 0,
+        "timestamp": earliest_ts,
     }
     return metadata, messages
 
@@ -359,8 +361,9 @@ def build_session_constraints(project=None, days=None, source=None, alias="s2"):
     conds = []
     params = []
     if project:
-        conds.append(f"{alias}.project LIKE ? || '%'")
-        params.append(project)
+        project_clause, project_params = project_match_clause(project, alias)
+        conds.append(project_clause)
+        params.extend(project_params)
     if days:
         cutoff = int((time.time() - days * 86400) * 1000)
         conds.append(f"{alias}.timestamp >= ?")
@@ -404,8 +407,8 @@ def index_sessions(conn, force=False):
     # Get existing mtimes keyed by file_path (stable across session_id changes)
     existing = {}
     try:
-        for row in conn.execute("SELECT file_path, session_id, mtime FROM sessions"):
-            existing[row[0]] = (row[1], row[2])
+        for row in conn.execute("SELECT file_path, session_id, mtime, timestamp FROM sessions"):
+            existing[row[0]] = (row[1], row[2], row[3])
     except sqlite3.OperationalError:
         pass
 
@@ -432,7 +435,12 @@ def index_sessions(conn, force=False):
         except OSError:
             continue
 
-        if not force and fpath in existing and existing[fpath][1] == mtime:
+        if (
+            not force
+            and fpath in existing
+            and existing[fpath][1] == mtime
+            and (existing[fpath][2] or 0) > 0
+        ):
             skipped += 1
             continue
 
@@ -457,10 +465,12 @@ def index_sessions(conn, force=False):
             conn.execute("INSERT INTO messages(messages, rank) VALUES('automerge', 0)")
             wrote_messages = True
 
+        session_timestamp = metadata["timestamp"] if metadata["timestamp"] else int(mtime * 1000)
+
         conn.execute(
             "INSERT OR REPLACE INTO sessions (session_id, source, file_path, project, slug, timestamp, mtime) VALUES (?, ?, ?, ?, ?, ?, ?)",
             (metadata["session_id"], metadata["source"], metadata["file_path"],
-             metadata["project"], metadata["slug"], metadata["timestamp"], mtime),
+             metadata["project"], metadata["slug"], session_timestamp, mtime),
         )
 
         conn.executemany(
@@ -487,42 +497,73 @@ def index_sessions(conn, force=False):
 
 # — Search —————————————————————————————————————————————————————————————————
 
-def list_sessions(conn, project=None, days=None, source=None, limit=10):
-    """List sessions ordered by recency."""
+def list_sessions(conn, project=None, days=None, source=None, limit=10, query=None):
+    """List sessions ordered by recency, optionally filtered by a text query."""
     conds, params = build_session_constraints(project=project, days=days, source=source, alias="s")
-    sql = "SELECT session_id, source, file_path, project, slug, timestamp FROM sessions s"
+
+    if not query:
+        sql = "SELECT session_id, source, file_path, project, slug, timestamp FROM sessions s"
+        if conds:
+            sql += " WHERE " + " AND ".join(conds)
+        sql += " ORDER BY timestamp DESC, session_id DESC LIMIT ?"
+        params.append(limit)
+        rows = conn.execute(sql, params).fetchall()
+        return [(sid, src, fpath, proj, slug, ts, "", 0.0) for sid, src, fpath, proj, slug, ts in rows]
+
+    # Query-filtered list mode: match text, then sort by recency.
+    query_sql = "SELECT s.session_id, s.source, s.file_path, s.project, s.slug, s.timestamp FROM sessions s WHERE "
     if conds:
-        sql += " WHERE " + " AND ".join(conds)
-    sql += " ORDER BY timestamp DESC, session_id DESC LIMIT ?"
-    params.append(limit)
+        query_sql += " AND ".join(conds) + " AND "
+    query_sql += "s.session_id IN (SELECT session_id FROM messages WHERE messages MATCH ?) "
+    query_sql += "ORDER BY s.timestamp DESC, s.session_id DESC LIMIT ?"
 
-    rows = conn.execute(sql, params).fetchall()
-    return [(sid, src, fpath, proj, slug, ts, "", 0.0) for sid, src, fpath, proj, slug, ts in rows]
+    query_params = params + [query, limit]
+    try:
+        rows = conn.execute(query_sql, query_params).fetchall()
+    except sqlite3.OperationalError as e:
+        print(f"List query error: {e}", file=sys.stderr)
+        rows = []
+
+    results = [(sid, src, fpath, proj, slug, ts, "", 0.0) for sid, src, fpath, proj, slug, ts in rows]
+    if results:
+        return results
+
+    # If FTS under-recalls for simple CJK query, use substring fallback and keep recency order.
+    if contains_cjk(query) and is_simple_query(query):
+        return search_cjk_fallback(
+            conn,
+            query,
+            project=project,
+            days=days,
+            source=source,
+            limit=limit,
+            preserve_sql_order=True,
+        )
+    return results
 
 
-def search_cjk_fallback(conn, query, project=None, days=None, source=None, limit=10):
-    """Fallback search for simple CJK queries using substring matching."""
+def search_cjk_fallback(conn, query, project=None, days=None, source=None, limit=10, preserve_sql_order=False):
+    """Fallback search for simple CJK queries using escaped substring matching."""
     terms = extract_cjk_terms(query)
     if not terms:
         return []
 
-    like_conds = ["text LIKE ?" for _ in terms]
-    like_params = [f"%{term}%" for term in terms]
-    session_conds, session_params = build_session_constraints(project=project, days=days, source=source, alias="s2")
+    like_conds = ["m.text LIKE ? ESCAPE '\\'" for _ in terms]
+    like_params = [f"%{escape_like(term)}%" for term in terms]
+    session_conds, session_params = build_session_constraints(project=project, days=days, source=source, alias="s")
     session_filter = ""
     if session_conds:
-        session_filter = (
-            " AND session_id IN "
-            "(SELECT s2.session_id FROM sessions s2 WHERE " + " AND ".join(session_conds) + ")"
-        )
+        session_filter = " AND " + " AND ".join(session_conds)
 
     candidate_limit = limit * 3
     sql = f"""
-        SELECT session_id, MIN(rowid) as first_rowid
-        FROM messages
+        SELECT m.session_id, MAX(m.rowid) as match_rowid,
+               s.source, s.file_path, s.project, s.slug, s.timestamp
+        FROM messages m
+        JOIN sessions s ON s.session_id = m.session_id
         WHERE {' AND '.join(like_conds)}{session_filter}
-        GROUP BY session_id
-        ORDER BY first_rowid DESC
+        GROUP BY m.session_id
+        ORDER BY s.timestamp DESC, match_rowid DESC
         LIMIT ?
     """
     params = like_params + session_params + [candidate_limit]
@@ -536,18 +577,10 @@ def search_cjk_fallback(conn, query, project=None, days=None, source=None, limit
     results = []
     now_ms = time.time() * 1000
     highlight_term = terms[0]
-    for session_id, rowid in matched:
-        meta = conn.execute(
-            "SELECT source, file_path, project, slug, timestamp FROM sessions WHERE session_id = ?",
-            (session_id,),
-        ).fetchone()
-        if not meta:
-            continue
-
+    for session_id, rowid, src, file_path, project_value, slug, timestamp in matched:
         text_row = conn.execute("SELECT text FROM messages WHERE rowid = ?", (rowid,)).fetchone()
         excerpt = make_excerpt(text_row[0] if text_row else "", highlight_term)
 
-        timestamp = meta[4]
         if timestamp:
             age_days = max((now_ms - timestamp) / 86_400_000, 0)
             recency_boost = math.exp(-0.693 * age_days / 30)  # half-life = 30 days
@@ -556,9 +589,10 @@ def search_cjk_fallback(conn, query, project=None, days=None, source=None, limit
 
         # Keep FTS-ranked results ahead of fallback results; use recency within fallback set.
         blended_rank = 1.0 - 0.2 * recency_boost
-        results.append((session_id, meta[0], meta[1], meta[2], meta[3], meta[4], excerpt, blended_rank))
+        results.append((session_id, src, file_path, project_value, slug, timestamp, excerpt, blended_rank))
 
-    results.sort(key=lambda r: r[7])
+    if not preserve_sql_order:
+        results.sort(key=lambda r: r[7])
     return results[:limit]
 
 
@@ -650,8 +684,8 @@ def format_timestamp(ts_ms):
 
 def main():
     parser = argparse.ArgumentParser(description="Search past Claude Code and Codex sessions")
-    parser.add_argument("query", nargs="?", help="Search query (FTS5 syntax: quotes for phrases, AND/OR/NOT)")
-    parser.add_argument("--list", action="store_true", help="List recent sessions instead of full-text search")
+    parser.add_argument("query", nargs="?", help="Search query; optional in --list mode to filter listed sessions")
+    parser.add_argument("--list", action="store_true", help="List recent sessions; optional QUERY filters the list")
     parser.add_argument("--project", help="Filter to sessions from a specific project path (prefix match)")
     parser.add_argument("--days", type=int, help="Only sessions from last N days")
     parser.add_argument("--source", choices=["claude", "codex"], help="Filter by source (claude or codex)")
@@ -659,8 +693,6 @@ def main():
     parser.add_argument("--reindex", action="store_true", help="Force full rebuild of the index")
 
     args = parser.parse_args()
-    if args.list and args.query:
-        parser.error("--list does not accept QUERY")
     if not args.list and not args.query:
         parser.error("QUERY is required unless --list is used")
 
@@ -688,7 +720,14 @@ def main():
 
     # Search or list
     if args.list:
-        results = list_sessions(conn, project=args.project, days=args.days, source=args.source, limit=args.limit)
+        results = list_sessions(
+            conn,
+            project=args.project,
+            days=args.days,
+            source=args.source,
+            limit=args.limit,
+            query=args.query,
+        )
     else:
         results = search(conn, args.query, project=args.project, days=args.days, source=args.source, limit=args.limit)
 
