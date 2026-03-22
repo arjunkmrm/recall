@@ -437,6 +437,29 @@ def index_sessions(conn, force=False):
 
 # — Search —————————————————————————————————————————————————————————————————
 
+def sanitize_fts_query(query):
+    """Sanitize a query for FTS5 MATCH.
+
+    FTS5 interprets bare hyphens as the NOT operator, so 'ask-codex' becomes
+    'ask NOT codex' which errors out when 'codex' isn't a column name.
+    Fix: replace hyphens in hyphenated words with spaces (preserving phrases
+    and explicit boolean operators).
+    """
+    # Don't touch anything inside double quotes (phrases)
+    parts = []
+    in_quote = False
+    for segment in query.split('"'):
+        if in_quote:
+            parts.append(f'"{segment}"')
+        else:
+            # Replace word-internal hyphens with spaces
+            # e.g. "ask-codex" -> "ask codex", but leave standalone "-" or "NOT" alone
+            segment = re.sub(r'(?<=\w)-(?=\w)', ' ', segment)
+            parts.append(segment)
+        in_quote = not in_quote
+    return ''.join(parts)
+
+
 def search(conn, query, project=None, days=None, source=None, limit=10):
     """Search indexed sessions. Uses trigram table for CJK queries, porter table otherwise."""
     # Pick the right FTS table based on query content
@@ -487,7 +510,8 @@ def search(conn, query, project=None, days=None, source=None, limit=10):
             return []
     else:
         # FTS5 MATCH path (normal)
-        fts_params = [query] + filter_params + [candidate_limit]
+        sanitized = sanitize_fts_query(query)
+        fts_params = [sanitized] + filter_params + [candidate_limit]
         inner_sql = f"""
             SELECT session_id, MIN(rank) as best_rank
             FROM {fts_table}
@@ -523,7 +547,7 @@ def search(conn, query, project=None, days=None, source=None, limit=10):
         else:
             snippet_row = conn.execute(
                 f"SELECT snippet({fts_table}, 2, '**', '**', '...', 20) FROM {fts_table} WHERE {fts_table} MATCH ? AND session_id = ? LIMIT 1",
-                (query, session_id),
+                (sanitized, session_id),
             ).fetchone()
             excerpt = snippet_row[0] if snippet_row else ""
 
