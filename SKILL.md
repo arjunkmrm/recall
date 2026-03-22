@@ -6,7 +6,7 @@ description: >
   "what did we discuss", "remember when we"
 metadata:
   author: arjunkmrm
-  version: "0.2.2"
+  version: "0.3.0"
   license: MIT
 ---
 
@@ -55,6 +55,7 @@ python3 ~/.claude/skills/recall/scripts/recall.py --reindex "test"
 - **Boolean**: `rust AND async`, `tauri OR electron`, `NOT deprecated`
 - **Prefix**: `buffer*` — matches bufferStore, bufferMap, etc.
 - **Combined**: `"state machine" AND test`
+- **CJK**: `issue化` — automatically uses trigram matching for Japanese/Chinese/Korean text
 
 ## After Finding a Match
 
@@ -85,3 +86,5 @@ If results are missing `File:` paths, run `--reindex` to backfill.
 - First run indexes all sessions (a few seconds); subsequent runs are incremental
 - Only user and assistant messages are indexed (tool calls, thinking blocks, state snapshots skipped)
 - Results show `[claude]` or `[codex]` tags to indicate the source
+- Dual-table FTS: English queries use Porter stemming, CJK queries use trigram matching
+- **Upgrading from 0.2.x**: run `--reindex` once to build the CJK index

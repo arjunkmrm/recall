@@ -1,5 +1,23 @@
 # Changelog
 
+## 0.3.0
+
+- Add CJK (Japanese, Chinese, Korean) search support via dual-table FTS
+- English queries use Porter stemming (`messages` table), CJK queries use trigram matching (`messages_cjk` table)
+- Only messages containing CJK characters are indexed into the trigram table (selective indexing)
+- Query routing is automatic based on presence of CJK characters in the search term
+- Auto-migration: existing databases get the new CJK table on first run and trigger a reindex
+
+### Upgrading from 0.2.x
+
+Run `--reindex` once to build the CJK index:
+
+```bash
+python3 ~/.claude/skills/recall/scripts/recall.py --reindex "test"
+```
+
+Closes #4.
+
 ## 0.2.2
 
 - Add slight recency bias to search ranking
