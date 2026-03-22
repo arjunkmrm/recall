@@ -442,8 +442,9 @@ def sanitize_fts_query(query):
 
     FTS5 interprets bare hyphens as the NOT operator, so 'ask-codex' becomes
     'ask NOT codex' which errors out when 'codex' isn't a column name.
-    Fix: replace hyphens in hyphenated words with spaces (preserving phrases
-    and explicit boolean operators).
+    Fix: split hyphenated words into individually quoted segments so
+    'ask-codex' -> '"ask" "codex"' (proximity match, no boolean interpretation).
+    User-quoted phrases and explicit boolean operators are preserved.
     """
     # Don't touch anything inside double quotes (phrases)
     parts = []
@@ -452,9 +453,13 @@ def sanitize_fts_query(query):
         if in_quote:
             parts.append(f'"{segment}"')
         else:
-            # Replace word-internal hyphens with spaces
-            # e.g. "ask-codex" -> "ask codex", but leave standalone "-" or "NOT" alone
-            segment = re.sub(r'(?<=\w)-(?=\w)', ' ', segment)
+            # Quote each part of hyphenated words individually
+            # e.g. "ask-codex" -> '"ask" "codex"'
+            segment = re.sub(
+                r'\b(\w+(?:-\w+)+)\b',
+                lambda m: ' '.join(f'"{w}"' for w in m.group().split('-')),
+                segment,
+            )
             parts.append(segment)
         in_quote = not in_quote
     return ''.join(parts)
