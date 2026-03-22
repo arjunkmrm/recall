@@ -20,6 +20,19 @@ CLAUDE_PROJECTS_DIR = CLAUDE_DIR / "projects"
 CODEX_SESSIONS_DIR = CODEX_DIR / "sessions"
 
 
+CJK_RE = re.compile(
+    r'[\u2E80-\u9FFF\uAC00-\uD7AF\uF900-\uFAFF'
+    r'\U00020000-\U0002A6DF\U0002A700-\U0002B73F'
+    r'\U0002B740-\U0002B81F\U0002B820-\U0002CEAF'
+    r'\U0002CEB0-\U0002EBEF\U00030000-\U0003134F]'
+)
+
+
+def has_cjk(text):
+    """Return True if text contains any CJK characters."""
+    return bool(CJK_RE.search(text))
+
+
 def create_schema(conn):
     conn.executescript("""
         CREATE TABLE IF NOT EXISTS sessions (
@@ -38,6 +51,13 @@ def create_schema(conn):
             text,
             tokenize='porter unicode61'
         );
+
+        CREATE VIRTUAL TABLE IF NOT EXISTS messages_cjk USING fts5(
+            session_id UNINDEXED,
+            role,
+            text,
+            tokenize='trigram'
+        );
     """)
 
 
@@ -53,6 +73,7 @@ def migrate_schema(conn):
     except sqlite3.OperationalError:
         conn.execute("ALTER TABLE sessions ADD COLUMN file_path TEXT DEFAULT ''")
         conn.commit()
+
 
 
 def migrate_db_location():
@@ -319,6 +340,7 @@ def index_sessions(conn, force=False):
         conn.executescript("""
             DELETE FROM sessions;
             DELETE FROM messages;
+            DELETE FROM messages_cjk;
         """)
 
     # Get existing mtimes keyed by file_path (stable across session_id changes)
@@ -347,6 +369,7 @@ def index_sessions(conn, force=False):
 
     # Disable FTS5 automerge during bulk insert to avoid repeated segment merges
     conn.execute("INSERT INTO messages(messages, rank) VALUES('automerge', 0)")
+    conn.execute("INSERT INTO messages_cjk(messages_cjk, rank) VALUES('automerge', 0)")
 
     for fpath, source in sources:
         try:
@@ -363,6 +386,7 @@ def index_sessions(conn, force=False):
             old_sid = existing[fpath][0]
             conn.execute("DELETE FROM sessions WHERE session_id = ?", (old_sid,))
             conn.execute("DELETE FROM messages WHERE session_id = ?", (old_sid,))
+            conn.execute("DELETE FROM messages_cjk WHERE session_id = ?", (old_sid,))
 
         if source == "claude":
             result = parse_claude_session(fpath)
@@ -380,10 +404,17 @@ def index_sessions(conn, force=False):
              metadata["project"], metadata["slug"], metadata["timestamp"], mtime),
         )
 
+        msg_rows = [(metadata["session_id"], role, text) for role, text in messages]
         conn.executemany(
             "INSERT INTO messages (session_id, role, text) VALUES (?, ?, ?)",
-            [(metadata["session_id"], role, text) for role, text in messages],
+            msg_rows,
         )
+        cjk_rows = [r for r in msg_rows if has_cjk(r[2])]
+        if cjk_rows:
+            conn.executemany(
+                "INSERT INTO messages_cjk (session_id, role, text) VALUES (?, ?, ?)",
+                cjk_rows,
+            )
 
         indexed += 1
 
@@ -393,6 +424,8 @@ def index_sessions(conn, force=False):
     if indexed > 0:
         conn.execute("INSERT INTO messages(messages) VALUES('optimize')")
         conn.execute("INSERT INTO messages(messages, rank) VALUES('automerge', 4)")
+        conn.execute("INSERT INTO messages_cjk(messages_cjk) VALUES('optimize')")
+        conn.execute("INSERT INTO messages_cjk(messages_cjk, rank) VALUES('automerge', 4)")
         conn.commit()
 
     # Get totals
@@ -405,51 +438,69 @@ def index_sessions(conn, force=False):
 # — Search —————————————————————————————————————————————————————————————————
 
 def search(conn, query, project=None, days=None, source=None, limit=10):
-    """Search indexed sessions."""
-    # FTS5 auxiliary functions (bm25, snippet) don't work with GROUP BY.
-    # Use a subquery to get the best-ranking rowid per session, then fetch snippets.
-    fts_params = [query]
-    session_filter = ""
+    """Search indexed sessions. Uses trigram table for CJK queries, porter table otherwise."""
+    # Pick the right FTS table based on query content
+    use_cjk = has_cjk(query)
+    fts_table = "messages_cjk" if use_cjk else "messages"
 
-    if project or days or source:
-        subconds = []
-        if project:
-            subconds.append("s2.project LIKE ? || '%'")
-            fts_params.append(project)
-        if days:
-            cutoff = int((time.time() - days * 86400) * 1000)
-            subconds.append("s2.timestamp >= ?")
-            fts_params.append(cutoff)
-        if source:
-            subconds.append("s2.source = ?")
-            fts_params.append(source)
+    # Trigram requires 3+ char queries. For shorter CJK queries, fall back to LIKE.
+    use_like = use_cjk and len(query.strip()) < 3
+
+    # Build session filter (shared by both paths)
+    session_filter_conds = []
+    filter_params = []
+    if project:
+        session_filter_conds.append("s2.project LIKE ? || '%'")
+        filter_params.append(project)
+    if days:
+        cutoff = int((time.time() - days * 86400) * 1000)
+        session_filter_conds.append("s2.timestamp >= ?")
+        filter_params.append(cutoff)
+    if source:
+        session_filter_conds.append("s2.source = ?")
+        filter_params.append(source)
+
+    session_filter = ""
+    if session_filter_conds:
         session_filter = (
             " AND session_id IN "
-            "(SELECT s2.session_id FROM sessions s2 WHERE " + " AND ".join(subconds) + ")"
+            "(SELECT s2.session_id FROM sessions s2 WHERE " + " AND ".join(session_filter_conds) + ")"
         )
 
     # Over-fetch candidates so recency re-ranking can surface recent results
-    # that pure BM25 might have ranked just outside the cutoff.
     candidate_limit = limit * 3
-    fts_params.append(candidate_limit)
 
-    # First find best-ranking session_ids.
-    # FTS5's rank column is auto-populated with bm25 when using ORDER BY rank.
-    inner_sql = f"""
-        SELECT session_id, MIN(rank) as best_rank
-        FROM messages
-        WHERE messages MATCH ?{session_filter}
-        GROUP BY session_id
-        ORDER BY best_rank
-        LIMIT ?
-    """
-
-    try:
-        # Two-pass: first get sessions+ranks, then fetch snippets individually
-        ranked = conn.execute(inner_sql, fts_params).fetchall()
-    except sqlite3.OperationalError as e:
-        print(f"Search error: {e}", file=sys.stderr)
-        return []
+    if use_like:
+        # LIKE fallback for short CJK queries (< 3 chars)
+        like_params = [f"%{query}%"] + filter_params + [candidate_limit]
+        like_sql = f"""
+            SELECT session_id, -1.0 as best_rank
+            FROM messages_cjk
+            WHERE text LIKE ?{session_filter}
+            GROUP BY session_id
+            LIMIT ?
+        """
+        try:
+            ranked = conn.execute(like_sql, like_params).fetchall()
+        except sqlite3.OperationalError as e:
+            print(f"Search error: {e}", file=sys.stderr)
+            return []
+    else:
+        # FTS5 MATCH path (normal)
+        fts_params = [query] + filter_params + [candidate_limit]
+        inner_sql = f"""
+            SELECT session_id, MIN(rank) as best_rank
+            FROM {fts_table}
+            WHERE {fts_table} MATCH ?{session_filter}
+            GROUP BY session_id
+            ORDER BY best_rank
+            LIMIT ?
+        """
+        try:
+            ranked = conn.execute(inner_sql, fts_params).fetchall()
+        except sqlite3.OperationalError as e:
+            print(f"Search error: {e}", file=sys.stderr)
+            return []
 
     results = []
     now_ms = time.time() * 1000
@@ -463,11 +514,18 @@ def search(conn, query, project=None, days=None, source=None, limit=10):
             continue
 
         # Get snippet from the best-matching row
-        snippet_row = conn.execute(
-            "SELECT snippet(messages, 2, '**', '**', '...', 20) FROM messages WHERE messages MATCH ? AND session_id = ? LIMIT 1",
-            (query, session_id),
-        ).fetchone()
-        excerpt = snippet_row[0] if snippet_row else ""
+        if use_like:
+            snippet_row = conn.execute(
+                "SELECT text FROM messages_cjk WHERE text LIKE ? AND session_id = ? LIMIT 1",
+                (f"%{query}%", session_id),
+            ).fetchone()
+            excerpt = snippet_row[0] if snippet_row else ""
+        else:
+            snippet_row = conn.execute(
+                f"SELECT snippet({fts_table}, 2, '**', '**', '...', 20) FROM {fts_table} WHERE {fts_table} MATCH ? AND session_id = ? LIMIT 1",
+                (query, session_id),
+            ).fetchone()
+            excerpt = snippet_row[0] if snippet_row else ""
 
         # Apply recency bias: blend BM25 score with a time-decay boost.
         # BM25 rank is negative (more negative = better match).
