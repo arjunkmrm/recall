@@ -74,36 +74,6 @@ def migrate_schema(conn):
         conn.execute("ALTER TABLE sessions ADD COLUMN file_path TEXT DEFAULT ''")
         conn.commit()
 
-    # Migrate to dual-table FTS (porter + trigram for CJK support).
-    # Use a metadata flag to track whether the CJK migration has run,
-    # so we don't force reindex on every run for English-only users.
-    try:
-        migrated = conn.execute(
-            "SELECT 1 FROM migration_flags WHERE flag = 'cjk_dual_table'"
-        ).fetchone()
-        if migrated:
-            return
-    except sqlite3.OperationalError:
-        conn.execute("CREATE TABLE IF NOT EXISTS migration_flags (flag TEXT PRIMARY KEY)")
-        conn.commit()
-
-    # Check if messages_cjk table existed before create_schema added it
-    try:
-        conn.execute("SELECT 1 FROM messages_cjk LIMIT 0")
-    except sqlite3.OperationalError:
-        # Table doesn't exist — recreate messages if it was changed to trigram-only
-        row = conn.execute(
-            "SELECT sql FROM sqlite_master WHERE type='table' AND name='messages'"
-        ).fetchone()
-        if row and 'porter' not in row[0]:
-            conn.executescript("DROP TABLE IF EXISTS messages;")
-        create_schema(conn)
-
-    # Force reindex so CJK messages get indexed into the new table
-    conn.execute("DELETE FROM sessions")
-    conn.execute("INSERT OR IGNORE INTO migration_flags VALUES ('cjk_dual_table')")
-    conn.commit()
-    print("Added CJK search index. Reindexing...", file=sys.stderr)
 
 
 def migrate_db_location():
