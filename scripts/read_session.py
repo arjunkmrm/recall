@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Pretty-print a Claude Code or Codex session transcript."""
+"""Pretty-print a Claude Code, Codex, or pi session transcript."""
 
 import json
 import sys
@@ -44,7 +44,23 @@ def iter_messages(path):
             if entry.get("record_type") == "state":
                 continue
 
-            if fmt == "claude":
+            if fmt == "pi":
+                # Pi: {type, id, parentId, timestamp, message: {role, content, ...}}
+                # Header is {type: "session", id, cwd, version, ...} — skip.
+                etype = entry.get("type", "")
+                if etype != "message":
+                    continue
+
+                msg = entry.get("message", {})
+                if not isinstance(msg, dict):
+                    continue
+
+                role = msg.get("role", "")
+                if role not in ("user", "assistant"):
+                    continue
+                content = msg.get("content", "")
+
+            elif fmt == "claude":
                 # Resolve role from type or role fields
                 role = entry.get("role", "")
                 if role not in ("user", "assistant"):
@@ -89,7 +105,14 @@ def iter_messages(path):
 
 
 def detect_format(path):
-    """Detect whether a session file is Claude Code or Codex format."""
+    """Detect whether a session file is Claude Code, Codex, or pi format.
+
+    Detection runs on the first non-empty parseable line and returns one of
+    "pi", "claude", or "codex". Order matters: pi headers carry both `type:
+    "session"` and `cwd`, which is the most distinctive signature; Claude
+    files have `parentUuid` or a top-level `message`; Codex files have
+    `record_type`, `instructions`, or `type: "session_meta"`.
+    """
     with open(path, "r", encoding="utf-8", errors="replace") as f:
         for line in f:
             line = line.strip()
@@ -99,6 +122,15 @@ def detect_format(path):
                 entry = json.loads(line)
             except json.JSONDecodeError:
                 continue
+            etype = entry.get("type", "")
+
+            # Pi v2/v3 header: {type: "session", id, cwd, version, ...}.
+            # Disambiguates from any "session"-typed entries elsewhere by
+            # requiring cwd or version on the same line (only present on the
+            # header).
+            if etype == "session" and ("cwd" in entry or "version" in entry):
+                return "pi"
+
             if entry.get("record_type") == "state":
                 return "codex"
             if "parentUuid" in entry or "message" in entry:
@@ -113,7 +145,7 @@ def detect_format(path):
 
 def main():
     import argparse
-    parser = argparse.ArgumentParser(description="Pretty-print a Claude Code or Codex session transcript")
+    parser = argparse.ArgumentParser(description="Pretty-print a Claude Code, Codex, or pi session transcript")
     parser.add_argument("path", help="Path to a session .jsonl file")
     parser.add_argument("--pretty", action="store_true", help="Human-readable output instead of JSON")
     args = parser.parse_args()
