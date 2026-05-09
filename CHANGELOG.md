@@ -1,5 +1,25 @@
 # Changelog
 
+## 0.4.1
+
+- Make the positional `query` argument optional. When omitted, list every
+  session in the time window without text matching — bypasses FTS entirely
+  and queries the `sessions` table by `(timestamp, source, project)`,
+  sorted by recency. Useful when callers want to enumerate every session
+  in a window rather than search for a term.
+- Output banner reads `Listed N sessions ...` in list mode (vs `Found ...`)
+- Empty-result message reads `No sessions in the time window.` in list mode
+- No schema change. No reindex needed.
+
+### Examples
+
+```bash
+recall --days 7                         # every session in the last week
+recall --days 7 --source pi             # every pi session in the last week
+recall --project ~/my-project --days 30 # this project, last 30 days
+recall "buffer" --days 7                # text-search, unchanged
+```
+
 ## 0.4.0
 
 - Add pi (`mariozechner/pi-coding-agent`) session support — indexes

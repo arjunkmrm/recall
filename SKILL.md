@@ -6,7 +6,7 @@ description: >
   "what did we discuss", "remember when we"
 metadata:
   author: arjunkmrm
-  version: "0.4.0"
+  version: "0.4.1"
   license: MIT
 ---
 
@@ -17,12 +17,18 @@ Search all past Claude Code, Codex, and pi sessions using full-text search with 
 ## Usage
 
 ```bash
-python3 ~/.claude/skills/recall/scripts/recall.py QUERY [--project PATH] [--days N] [--source claude|codex|pi] [--limit N] [--reindex]
+python3 ~/.claude/skills/recall/scripts/recall.py [QUERY] [--project PATH] [--days N] [--source claude|codex|pi] [--limit N] [--reindex]
 ```
 
 ## Examples
 
 ```bash
+# List every session in the last day (no text search)
+python3 ~/.claude/skills/recall/scripts/recall.py --days 1
+
+# List every pi session in the last week
+python3 ~/.claude/skills/recall/scripts/recall.py --days 7 --source pi
+
 # Simple keyword search
 python3 ~/.claude/skills/recall/scripts/recall.py "bufferStore"
 
@@ -94,5 +100,7 @@ If results are missing `File:` paths, run `--reindex` to backfill.
 - Only user and assistant messages are indexed (tool calls, thinking blocks, state snapshots skipped)
 - Results show `[claude]`, `[codex]`, or `[pi]` tags to indicate the source
 - Dual-table FTS: English queries use Porter stemming, CJK queries use trigram matching
+- Omit the query argument for **list mode** — every session in the window, sorted by recency, no FTS
+- Provide a query for full-text search; both modes accept `--project`, `--days`, `--source`, `--limit`
 - **Upgrading from 0.3.x**: run `--reindex` once to pull in pi sessions
 - **Upgrading from 0.2.x**: run `--reindex` once to build the CJK index

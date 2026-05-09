@@ -577,6 +577,40 @@ def sanitize_fts_query(query):
     return ''.join(parts)
 
 
+def list_sessions(conn, project=None, days=None, source=None, limit=10):
+    """List sessions in the time window without text matching.
+
+    Used when no query string is supplied. Bypasses FTS entirely — the
+    sessions table has all we need (source, project, slug, timestamp).
+    Sorted by recency. Returns rows in the same shape as search() so
+    main()'s rendering loop is unchanged: empty excerpt, rank=0.
+    """
+    conds = []
+    params = []
+    if project:
+        conds.append("project LIKE ? || '%'")
+        params.append(project)
+    if days:
+        cutoff = int((time.time() - days * 86400) * 1000)
+        conds.append("timestamp >= ?")
+        params.append(cutoff)
+    if source:
+        conds.append("source = ?")
+        params.append(source)
+
+    where = ("WHERE " + " AND ".join(conds)) if conds else ""
+    sql = (
+        "SELECT session_id, source, file_path, project, slug, timestamp "
+        f"FROM sessions {where} ORDER BY timestamp DESC LIMIT ?"
+    )
+    params.append(limit)
+
+    return [
+        (sid, src, fp, proj, slug, ts, "", 0.0)
+        for sid, src, fp, proj, slug, ts in conn.execute(sql, params).fetchall()
+    ]
+
+
 def search(conn, query, project=None, days=None, source=None, limit=10):
     """Search indexed sessions. Uses trigram table for CJK queries, porter table otherwise."""
     # Pick the right FTS table based on query content
@@ -700,7 +734,7 @@ def format_timestamp(ts_ms):
 
 def main():
     parser = argparse.ArgumentParser(description="Search past Claude Code, Codex, and pi sessions")
-    parser.add_argument("query", help="Search query (FTS5 syntax: quotes for phrases, AND/OR/NOT)")
+    parser.add_argument("query", nargs="?", help="Search query (FTS5 syntax: quotes for phrases, AND/OR/NOT). Omit to list all sessions in the time window without text matching.")
     parser.add_argument("--project", help="Filter to sessions from a specific project path (prefix match)")
     parser.add_argument("--days", type=int, help="Only sessions from last N days")
     parser.add_argument("--source", choices=["claude", "codex", "pi"], help="Filter by source (claude, codex, or pi)")
@@ -729,15 +763,22 @@ def main():
     if indexed > 0:
         print(f"Indexed {indexed} sessions in {index_time:.1f}s", file=sys.stderr)
 
-    # Search
-    results = search(conn, args.query, project=args.project, days=args.days, source=args.source, limit=args.limit)
+    # Search (with query) or list (without query)
+    if args.query:
+        results = search(conn, args.query, project=args.project, days=args.days, source=args.source, limit=args.limit)
+        empty_message = "No matching sessions found."
+        header_verb = "Found"
+    else:
+        results = list_sessions(conn, project=args.project, days=args.days, source=args.source, limit=args.limit)
+        empty_message = "No sessions in the time window."
+        header_verb = "Listed"
 
     if not results:
-        print("No matching sessions found.")
+        print(empty_message)
         conn.close()
         return
 
-    print(f"Found {len(results)} sessions (index: {total_sessions} sessions, {total_messages} messages):\n")
+    print(f"{header_verb} {len(results)} sessions (index: {total_sessions} sessions, {total_messages} messages):\n")
 
     for i, (session_id, source, file_path, project, slug, timestamp, excerpt, rank) in enumerate(results, 1):
         date = format_timestamp(timestamp)
