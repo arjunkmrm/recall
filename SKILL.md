@@ -1,23 +1,23 @@
 ---
 name: recall
 description: >
-  Search past Claude Code and Codex sessions. Triggers: /recall, "search old conversations",
+  Search past Claude Code, Codex, and pi sessions. Triggers: /recall, "search old conversations",
   "find a past session", "recall a previous conversation", "search session history",
   "what did we discuss", "remember when we"
 metadata:
   author: arjunkmrm
-  version: "0.3.0"
+  version: "0.4.0"
   license: MIT
 ---
 
-# /recall — Search Past Claude & Codex Sessions
+# /recall — Search Past Claude, Codex & pi Sessions
 
-Search all past Claude Code and Codex sessions using full-text search with BM25 ranking.
+Search all past Claude Code, Codex, and pi sessions using full-text search with BM25 ranking.
 
 ## Usage
 
 ```bash
-python3 ~/.claude/skills/recall/scripts/recall.py QUERY [--project PATH] [--days N] [--source claude|codex] [--limit N] [--reindex]
+python3 ~/.claude/skills/recall/scripts/recall.py QUERY [--project PATH] [--days N] [--source claude|codex|pi] [--limit N] [--reindex]
 ```
 
 ## Examples
@@ -44,6 +44,9 @@ python3 ~/.claude/skills/recall/scripts/recall.py "buffer" --source claude
 # Search only Codex sessions
 python3 ~/.claude/skills/recall/scripts/recall.py "buffer" --source codex
 
+# Search only pi sessions
+python3 ~/.claude/skills/recall/scripts/recall.py "buffer" --source pi
+
 # Force reindex
 python3 ~/.claude/skills/recall/scripts/recall.py --reindex "test"
 ```
@@ -69,6 +72,10 @@ claude --resume SESSION_ID
 # Codex sessions [codex]
 cd /path/to/project
 codex resume SESSION_ID
+
+# Pi sessions [pi]
+cd /path/to/project
+pi --session SESSION_ID         # full or partial id; pi resolves prefix matches
 ```
 
 Each result includes a `File:` path. Use it to read the raw transcript (auto-detects format):
@@ -82,9 +89,10 @@ If results are missing `File:` paths, run `--reindex` to backfill.
 ## Notes
 
 - Index is stored at `~/.recall.db` (SQLite FTS5, auto-migrated from `~/.claude/recall.db`)
-- Indexes both `~/.claude/projects/` (Claude Code) and `~/.codex/sessions/` (Codex)
+- Indexes three sources: `~/.claude/projects/` (Claude Code), `~/.codex/sessions/` (Codex), and `~/.pi/agent/sessions/` (pi)
 - First run indexes all sessions (a few seconds); subsequent runs are incremental
 - Only user and assistant messages are indexed (tool calls, thinking blocks, state snapshots skipped)
-- Results show `[claude]` or `[codex]` tags to indicate the source
+- Results show `[claude]`, `[codex]`, or `[pi]` tags to indicate the source
 - Dual-table FTS: English queries use Porter stemming, CJK queries use trigram matching
+- **Upgrading from 0.3.x**: run `--reindex` once to pull in pi sessions
 - **Upgrading from 0.2.x**: run `--reindex` once to build the CJK index

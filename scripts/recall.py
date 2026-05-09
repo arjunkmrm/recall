@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Search past Claude Code and Codex sessions using FTS5 full-text search."""
+"""Search past Claude Code, Codex, and pi sessions using FTS5 full-text search."""
 
 import argparse
 import json
@@ -15,9 +15,11 @@ from pathlib import Path
 
 CLAUDE_DIR = Path.home() / ".claude"
 CODEX_DIR = Path.home() / ".codex"
+PI_DIR = Path.home() / ".pi"
 DB_PATH = Path.home() / ".recall.db"
 CLAUDE_PROJECTS_DIR = CLAUDE_DIR / "projects"
 CODEX_SESSIONS_DIR = CODEX_DIR / "sessions"
+PI_SESSIONS_DIR = PI_DIR / "agent" / "sessions"
 
 
 CJK_RE = re.compile(
@@ -332,6 +334,109 @@ def parse_codex_session(path):
     return metadata, messages
 
 
+# — Pi session parser ——————————————————————————————————————————————————————
+
+def parse_pi_session(path):
+    """Parse a pi (mariozechner/pi-coding-agent) JSONL session file.
+
+    Pi sessions live in ~/.pi/agent/sessions/--<encoded-cwd>--/<ts>_<uuid>.jsonl.
+    The first line is a session header ({type: "session", id, cwd, version, ...}).
+    Subsequent lines are entries with a top-level "type" field. We index only
+    user/assistant text from {type: "message"} entries, skipping thinking,
+    toolCall, and image blocks. Other entry types (custom, custom_message,
+    session_info, model_change, thinking_level_change, compaction,
+    branch_summary, label) are skipped to mirror the Claude and Codex parsers'
+    user+assistant-only behaviour.
+
+    See https://github.com/mariozechner/pi-mono and the pi-coding-agent
+    docs/session-format.md for the full schema.
+    """
+    session_id = Path(path).stem
+    project = None
+    slug = None
+    earliest_ts = None
+    messages = []
+
+    # Filename pattern: <ISO-timestamp>_<uuid>.jsonl
+    # e.g. 2026-05-06T13-50-25-335Z_019dfd8d-da36-7552-b0d5-dfa08528cf9b.jsonl
+    uuid_match = re.search(
+        r"_([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})$",
+        session_id,
+    )
+
+    try:
+        with open(path, "r", encoding="utf-8", errors="replace") as f:
+            for line in f:
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    entry = json.loads(line)
+                except json.JSONDecodeError:
+                    continue
+
+                etype = entry.get("type", "")
+
+                # Session header — first line, metadata only.
+                if etype == "session":
+                    entry_id = entry.get("id", "")
+                    if entry_id:
+                        session_id = entry_id
+                    if not project:
+                        project = entry.get("cwd", "")
+                    ts_ms = parse_iso_timestamp(entry.get("timestamp"))
+                    if ts_ms and (earliest_ts is None or ts_ms < earliest_ts):
+                        earliest_ts = ts_ms
+                    continue
+
+                # Skip everything that isn't a conversational message:
+                # custom (extension state), custom_message (extension-injected),
+                # session_info (display name), model_change, thinking_level_change,
+                # compaction, branch_summary, label.
+                if etype != "message":
+                    continue
+
+                # Track earliest entry timestamp defensively in case the header
+                # is missing or files are partially written.
+                ts_ms = parse_iso_timestamp(entry.get("timestamp"))
+                if ts_ms and (earliest_ts is None or ts_ms < earliest_ts):
+                    earliest_ts = ts_ms
+
+                msg = entry.get("message", {})
+                if not isinstance(msg, dict):
+                    continue
+
+                role = msg.get("role", "")
+                # Only index user and assistant messages — skip toolResult,
+                # bashExecution, and any other non-conversational roles.
+                if role not in ("user", "assistant"):
+                    continue
+
+                text = extract_text(msg.get("content", ""))
+                if text:
+                    messages.append((role, text))
+
+    except (OSError, PermissionError) as e:
+        print(f"Warning: skipping {path}: {e}", file=sys.stderr)
+        return None
+
+    if not slug:
+        short_id = uuid_match.group(1)[:8] if uuid_match else session_id[:8]
+        ts_match = re.match(r"(\d{4}-\d{2}-\d{2})", Path(path).stem)
+        date_slug = ts_match.group(1) if ts_match else None
+        slug = f"{date_slug}-{short_id}" if date_slug else short_id
+
+    metadata = {
+        "session_id": session_id,
+        "source": "pi",
+        "file_path": path,
+        "project": project or "",
+        "slug": slug,
+        "timestamp": earliest_ts or 0,
+    }
+    return metadata, messages
+
+
 # — Indexing ———————————————————————————————————————————————————————————————
 
 def index_sessions(conn, force=False):
@@ -364,6 +469,11 @@ def index_sessions(conn, force=False):
     for fpath in glob(codex_pattern, recursive=True):
         sources.append((fpath, "codex"))
 
+    # Pi: ~/.pi/agent/sessions/**/*.jsonl
+    pi_pattern = str(PI_SESSIONS_DIR / "**" / "*.jsonl")
+    for fpath in glob(pi_pattern, recursive=True):
+        sources.append((fpath, "pi"))
+
     indexed = 0
     skipped = 0
 
@@ -390,8 +500,10 @@ def index_sessions(conn, force=False):
 
         if source == "claude":
             result = parse_claude_session(fpath)
-        else:
+        elif source == "codex":
             result = parse_codex_session(fpath)
+        else:  # pi
+            result = parse_pi_session(fpath)
 
         if result is None:
             continue
@@ -587,11 +699,11 @@ def format_timestamp(ts_ms):
 
 
 def main():
-    parser = argparse.ArgumentParser(description="Search past Claude Code and Codex sessions")
+    parser = argparse.ArgumentParser(description="Search past Claude Code, Codex, and pi sessions")
     parser.add_argument("query", help="Search query (FTS5 syntax: quotes for phrases, AND/OR/NOT)")
     parser.add_argument("--project", help="Filter to sessions from a specific project path (prefix match)")
     parser.add_argument("--days", type=int, help="Only sessions from last N days")
-    parser.add_argument("--source", choices=["claude", "codex"], help="Filter by source (claude or codex)")
+    parser.add_argument("--source", choices=["claude", "codex", "pi"], help="Filter by source (claude, codex, or pi)")
     parser.add_argument("--limit", type=int, default=10, help="Max results (default: 10)")
     parser.add_argument("--reindex", action="store_true", help="Force full rebuild of the index")
 

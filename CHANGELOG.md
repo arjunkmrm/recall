@@ -1,5 +1,25 @@
 # Changelog
 
+## 0.4.0
+
+- Add pi (`mariozechner/pi-coding-agent`) session support — indexes
+  `~/.claude/projects/`, `~/.codex/sessions/`, and `~/.pi/agent/sessions/`
+- Unified search across Claude Code, Codex, and pi sessions
+- Results tagged `[claude]`, `[codex]`, or `[pi]` to show origin
+- `--source` choices now include `pi` (was `claude|codex`)
+- `read_session.py` auto-detects pi format (header `type: "session"` with `cwd`)
+- Pi parser keeps user/assistant text only — skips thinking, toolCall, image,
+  toolResult, bashExecution, custom, custom_message, session_info, model_change,
+  thinking_level_change, compaction, branch_summary, label
+
+### Upgrading from 0.3.x
+
+Run `--reindex` once to pull pi sessions into the index:
+
+```bash
+python3 ~/.claude/skills/recall/scripts/recall.py --reindex "test"
+```
+
 ## 0.3.0
 
 - Add CJK (Japanese, Chinese, Korean) search support via dual-table FTS
