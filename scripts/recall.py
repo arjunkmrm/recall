@@ -623,13 +623,6 @@ def parse_grok_session(path):
 
 def index_sessions(conn, force=False):
     """Scan and index new/changed session files from all sources."""
-    if force:
-        conn.executescript("""
-            DELETE FROM sessions;
-            DELETE FROM messages;
-            DELETE FROM messages_cjk;
-        """)
-
     # Get existing mtimes keyed by file_path (stable across session_id changes)
     existing = {}
     try:
@@ -678,13 +671,6 @@ def index_sessions(conn, force=False):
             skipped += 1
             continue
 
-        # Remove old data for this file if re-indexing
-        if fpath in existing:
-            old_sid = existing[fpath][0]
-            conn.execute("DELETE FROM sessions WHERE session_id = ?", (old_sid,))
-            conn.execute("DELETE FROM messages WHERE session_id = ?", (old_sid,))
-            conn.execute("DELETE FROM messages_cjk WHERE session_id = ?", (old_sid,))
-
         if source == "claude":
             result = parse_claude_session(fpath)
         elif source == "codex":
@@ -698,6 +684,14 @@ def index_sessions(conn, force=False):
             continue
 
         metadata, messages = result
+
+        # Replace this file only after it has been read successfully. Fall back
+        # to its parsed id for older rows that do not record a file path.
+        old_sid = (existing[fpath][0]
+                   if fpath in existing else metadata["session_id"])
+        conn.execute("DELETE FROM sessions WHERE session_id = ?", (old_sid,))
+        conn.execute("DELETE FROM messages WHERE session_id = ?", (old_sid,))
+        conn.execute("DELETE FROM messages_cjk WHERE session_id = ?", (old_sid,))
 
         conn.execute(
             "INSERT OR REPLACE INTO sessions (session_id, source, file_path, project, slug, timestamp, mtime) VALUES (?, ?, ?, ?, ?, ?, ?)",

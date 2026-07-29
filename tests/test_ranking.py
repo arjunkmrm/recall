@@ -35,7 +35,8 @@ class RecencyBias(unittest.TestCase):
         for name, value in (("CLAUDE_DIR", self.root),
                             ("CLAUDE_PROJECTS_DIR", self.projects),
                             ("CODEX_SESSIONS_DIR", self.root / "none"),
-                            ("PI_SESSIONS_DIR", self.root / "none")):
+                            ("PI_SESSIONS_DIR", self.root / "none"),
+                            ("GROK_SESSIONS_DIR", self.root / "none")):
             self.addCleanup(setattr, recall, name, getattr(recall, name))
             setattr(recall, name, value)
 
