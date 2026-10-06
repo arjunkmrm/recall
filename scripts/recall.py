@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Search past Claude Code, Codex, pi and Grok sessions using FTS5 full-text search."""
+"""Search past Claude Code, Codex, pi, Grok, and Cursor Agent sessions using FTS5 full-text search."""
 
 import argparse
 import json
@@ -24,12 +24,14 @@ CLAUDE_DIR = Path.home() / ".claude"
 CODEX_DIR = Path.home() / ".codex"
 PI_DIR = Path.home() / ".pi"
 GROK_DIR = Path.home() / ".grok"
+CURSOR_DIR = Path.home() / ".cursor"
 DB_PATH = Path.home() / ".recall.db"
 DB_LOCK_PATH = Path.home() / ".recall.db.lock"
 CLAUDE_PROJECTS_DIR = CLAUDE_DIR / "projects"
 CODEX_SESSIONS_DIR = CODEX_DIR / "sessions"
 PI_SESSIONS_DIR = PI_DIR / "agent" / "sessions"
 GROK_SESSIONS_DIR = GROK_DIR / "sessions"
+CURSOR_PROJECTS_DIR = CURSOR_DIR / "projects"
 
 
 # How long a run waits for another run to finish indexing before giving up and
@@ -619,6 +621,134 @@ def parse_grok_session(path):
     return metadata, messages
 
 
+# — Cursor Agent session parser ———————————————————————————————————————————
+
+def decode_cursor_project_slug(slug):
+    """Decode a Cursor project folder name back to a filesystem path.
+
+    Cursor encodes workspace paths as hyphen-separated segments under
+    ~/.cursor/projects/, e.g. c-Users-alice-src-foo -> C:\\Users\\alice\\src\\foo.
+    """
+    if not slug or slug.isdigit():
+        return ""
+    parts = slug.split("-")
+    win_sep = "\\"
+    if len(parts) < 2:
+        if len(parts) == 1 and len(parts[0]) == 1 and parts[0].isalpha():
+            return f"{parts[0].upper()}:{win_sep}"
+        return ""
+
+    if len(parts[0]) == 1 and parts[0].isalpha():
+        drive = parts[0].upper()
+        rest = win_sep.join(parts[1:])
+        return f"{drive}:{win_sep}{rest}"
+
+    if parts[0] in ("Users", "home", "tmp", "var", "opt"):
+        return os.sep + os.sep.join(parts)
+
+    return os.sep.join(parts)
+
+
+def cursor_project_from_path(path):
+    """Extract decoded project path from a Cursor agent-transcripts file path."""
+    parts = Path(path).parts
+    try:
+        idx = parts.index("projects")
+    except ValueError:
+        return ""
+    if idx + 1 >= len(parts):
+        return ""
+    return decode_cursor_project_slug(parts[idx + 1])
+
+
+def cursor_working_directory_from_transcript(path):
+    """Read the first Shell tool_use working_directory from a Cursor transcript."""
+    try:
+        with open(path, "r", encoding="utf-8", errors="replace") as f:
+            for line in f:
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    entry = json.loads(line)
+                except json.JSONDecodeError:
+                    continue
+                msg = entry.get("message", {})
+                if not isinstance(msg, dict):
+                    continue
+                content = msg.get("content", [])
+                if not isinstance(content, list):
+                    continue
+                for block in content:
+                    if not isinstance(block, dict) or block.get("type") != "tool_use":
+                        continue
+                    inp = block.get("input", {})
+                    if isinstance(inp, dict):
+                        wd = inp.get("working_directory", "")
+                        if wd:
+                            return wd
+    except OSError:
+        pass
+    return ""
+
+
+def parse_cursor_session(path):
+    """Parse a Cursor Agent JSONL transcript, returning (metadata, messages).
+
+    Cursor Agent (CLI and IDE) stores transcripts at:
+      ~/.cursor/projects/<encoded-workspace>/agent-transcripts/<uuid>/<uuid>.jsonl
+
+    Each line is {role: user|assistant, message: {content: ...}}. Tool calls and
+    other blocks are skipped via extract_text (text blocks only).
+    """
+    session_id = Path(path).stem
+    project = cursor_working_directory_from_transcript(path) or cursor_project_from_path(path)
+    slug = session_id[:8] if len(session_id) >= 8 else session_id
+    messages = []
+
+    try:
+        with open(path, "r", encoding="utf-8", errors="replace") as f:
+            for line in f:
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    entry = json.loads(line)
+                except json.JSONDecodeError:
+                    continue
+
+                role = entry.get("role", "")
+                if role not in ("user", "assistant"):
+                    continue
+
+                msg = entry.get("message", {})
+                if not isinstance(msg, dict):
+                    continue
+
+                text = extract_text(msg.get("content", ""))
+                if text:
+                    messages.append((role, text))
+
+    except (OSError, PermissionError) as e:
+        print(f"Warning: skipping {path}: {e}", file=sys.stderr)
+        return None
+
+    try:
+        mtime_ms = int(os.path.getmtime(path) * 1000)
+    except OSError:
+        mtime_ms = 0
+
+    metadata = {
+        "session_id": session_id,
+        "source": "cursor",
+        "file_path": path,
+        "project": project or "",
+        "slug": slug,
+        "timestamp": mtime_ms,
+    }
+    return metadata, messages
+
+
 # — Indexing ———————————————————————————————————————————————————————————————
 
 def index_sessions(conn, force=False):
@@ -661,6 +791,13 @@ def index_sessions(conn, force=False):
     for fpath in glob(grok_pattern, recursive=True):
         sources.append((fpath, "grok"))
 
+    # Cursor Agent: ~/.cursor/projects/*/agent-transcripts/*/*.jsonl
+    cursor_pattern = str(CURSOR_PROJECTS_DIR / "**" / "agent-transcripts" / "*" / "*.jsonl")
+    for fpath in glob(cursor_pattern, recursive=True):
+        # Only index canonical session files (uuid/uuid.jsonl)
+        if Path(fpath).parent.name == Path(fpath).stem:
+            sources.append((fpath, "cursor"))
+
     indexed = 0
     skipped = 0
 
@@ -691,8 +828,10 @@ def index_sessions(conn, force=False):
             result = parse_codex_session(fpath)
         elif source == "pi":
             result = parse_pi_session(fpath)
-        else:  # grok
+        elif source == "grok":
             result = parse_grok_session(fpath)
+        else:  # cursor
+            result = parse_cursor_session(fpath)
 
         if result is None:
             continue
@@ -781,8 +920,8 @@ def list_sessions(conn, project=None, days=None, source=None, limit=10):
     conds = []
     params = []
     if project:
-        conds.append("project LIKE ? || '%'")
-        params.append(project)
+        conds.append("(project LIKE ? || '%' OR project LIKE '%' || ? || '%')")
+        params.extend([project, project])
     if days:
         cutoff = int((time.time() - days * 86400) * 1000)
         conds.append("timestamp >= ?")
@@ -817,8 +956,10 @@ def search(conn, query, project=None, days=None, source=None, limit=10):
     session_filter_conds = []
     filter_params = []
     if project:
-        session_filter_conds.append("s2.project LIKE ? || '%'")
-        filter_params.append(project)
+        session_filter_conds.append(
+            "(s2.project LIKE ? || '%' OR s2.project LIKE '%' || ? || '%')"
+        )
+        filter_params.extend([project, project])
     if days:
         cutoff = int((time.time() - days * 86400) * 1000)
         session_filter_conds.append("s2.timestamp >= ?")
@@ -928,11 +1069,17 @@ def format_timestamp(ts_ms):
 
 
 def main():
-    parser = argparse.ArgumentParser(description="Search past Claude Code, Codex, pi and Grok sessions")
+    parser = argparse.ArgumentParser(
+        description="Search past Claude Code, Codex, pi, Grok, and Cursor Agent sessions"
+    )
     parser.add_argument("query", nargs="?", help="Search query (FTS5 syntax: quotes for phrases, AND/OR/NOT). Omit to list all sessions in the time window without text matching.")
     parser.add_argument("--project", help="Filter to sessions from a specific project path (prefix match)")
     parser.add_argument("--days", type=int, help="Only sessions from last N days")
-    parser.add_argument("--source", choices=["claude", "codex", "pi", "grok"], help="Filter by source (claude, codex, pi, or grok)")
+    parser.add_argument(
+        "--source",
+        choices=["claude", "codex", "pi", "grok", "cursor"],
+        help="Filter by source (claude, codex, pi, grok, or cursor)",
+    )
     parser.add_argument("--limit", type=int, default=10, help="Max results (default: 10)")
     parser.add_argument("--reindex", action="store_true", help="Force full rebuild of the index")
 

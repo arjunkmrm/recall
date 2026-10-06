@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Pretty-print a Claude Code, Codex, pi, or Grok session transcript."""
+"""Pretty-print a Claude Code, Codex, pi, Grok, or Cursor Agent session transcript."""
 
 import json
 import sys
@@ -49,7 +49,16 @@ def iter_messages(path):
             if entry.get("record_type") == "state":
                 continue
 
-            if fmt == "pi":
+            if fmt == "cursor":
+                role = entry.get("role", "")
+                if role not in ("user", "assistant"):
+                    continue
+                msg = entry.get("message", {})
+                if not isinstance(msg, dict):
+                    continue
+                content = msg.get("content", "")
+
+            elif fmt == "pi":
                 # Pi: {type, id, parentId, timestamp, message: {role, content, ...}}
                 # Header is {type: "session", id, cwd, version, ...} — skip.
                 etype = entry.get("type", "")
@@ -125,9 +134,10 @@ def iter_messages(path):
 
 
 def detect_format(path):
-    """Detect whether a session file is Claude Code, Codex, pi, or Grok format.
+    """Detect whether a session file is Claude Code, Codex, pi, Grok, or Cursor format.
 
-    Grok is settled by path, since every Grok transcript is named
+    Cursor and Grok are settled by path. Cursor transcripts live under
+    ~/.cursor/projects/.../agent-transcripts/. Every Grok transcript is named
     chat_history.jsonl inside a per-session directory and its entries are too
     plain to tell apart from the others by content alone.
 
@@ -137,6 +147,9 @@ def detect_format(path):
     `message`; Codex files have `record_type`, `instructions`, or
     `type: "session_meta"`.
     """
+    norm = str(path).replace("\\", "/")
+    if "/.cursor/projects/" in norm and "/agent-transcripts/" in norm:
+        return "cursor"
     path_obj = Path(path)
     if path_obj.name == "chat_history.jsonl" or "/.grok/sessions/" in str(path_obj):
         return "grok"
@@ -173,7 +186,9 @@ def detect_format(path):
 
 def main():
     import argparse
-    parser = argparse.ArgumentParser(description="Pretty-print a Claude Code, Codex, or pi session transcript")
+    parser = argparse.ArgumentParser(
+        description="Pretty-print a Claude Code, Codex, pi, Grok, or Cursor Agent session transcript"
+    )
     parser.add_argument("path", help="Path to a session .jsonl file")
     parser.add_argument("--pretty", action="store_true", help="Human-readable output instead of JSON")
     args = parser.parse_args()

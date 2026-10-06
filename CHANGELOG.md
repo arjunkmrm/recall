@@ -12,6 +12,21 @@
   and are skipped, as are `<user_info>`, `<system-reminder>` and `<git_status>`
   blocks
 - `read_session.py` reads Grok transcripts, detected by path
+- Add **Cursor Agent** session support (Cursor IDE + `agent` CLI), closes #9
+- Indexes `~/.cursor/projects/*/agent-transcripts/<uuid>/<uuid>.jsonl`
+- New `--source cursor` filter; results tagged `[cursor]`
+- Decodes workspace slug to filesystem path for `--project` matching
+- Cursor session timestamps use file mtime (Cursor JSONL has no message timestamps)
+- `read_session.py` detects Cursor transcripts by path under `agent-transcripts/`
+- Resume: `agent --resume <session-id>` (see SKILL.md)
+
+### Upgrading
+
+Run `--reindex` once to pull Grok and Cursor sessions into the index:
+
+```bash
+python3 ~/.claude/skills/recall/scripts/recall.py --reindex "test"
+```
 
 ## 0.4.1
 
